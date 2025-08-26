@@ -8,3 +8,9 @@ yfinance
 matplotlib
 streamlit
 openpyxl
+streamlit
+yfinance
+pandas
+pandas_ta
+plotly
+
