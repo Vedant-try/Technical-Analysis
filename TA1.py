@@ -21,23 +21,25 @@ if ticker:
         # -------------------------------
         # Technical Indicators
         # -------------------------------
-        # SMA (using pandas directly)
+        # SMA (pandas)
         data["SMA20"] = data["Close"].rolling(window=20).mean()
 
         # EMA
-        data["EMA20"] = ta.trend.EMAIndicator(data["Close"], window=20).ema_indicator()
+        ema = ta.trend.EMAIndicator(close=data["Close"], window=20)
+        data["EMA20"] = ema.ema_indicator()
 
         # RSI
-        data["RSI"] = ta.momentum.RSIIndicator(data["Close"], window=14).rsi()
+        rsi = ta.momentum.RSIIndicator(close=data["Close"], window=14)
+        data["RSI"] = rsi.rsi()
 
         # MACD
-        macd = ta.trend.MACD(data["Close"])
+        macd = ta.trend.MACD(close=data["Close"])
         data["MACD"] = macd.macd()
         data["Signal"] = macd.macd_signal()
         data["Hist"] = macd.macd_diff()
 
         # Bollinger Bands
-        boll = ta.volatility.BollingerBands(data["Close"], window=20, window_dev=2)
+        boll = ta.volatility.BollingerBands(close=data["Close"], window=20, window_dev=2)
         data["BB_upper"] = boll.bollinger_hband()
         data["BB_lower"] = boll.bollinger_lband()
 
