@@ -5,6 +5,8 @@ import yfinance as yf
 import pandas as pd
 import pandas_ta as ta
 import plotly.graph_objs as go
+import pandas_ta as ta
+
 
 # App title
 st.title("📊 Simple Technical Analysis App (with pandas_ta)")
@@ -53,3 +55,4 @@ if ticker:
 
     else:
         st.error("Ticker not found. Try again.")
+
