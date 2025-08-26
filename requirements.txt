@@ -5,3 +5,4 @@ yfinance==0.2.65
 pandas==2.3.2
 pandas_ta==0.3.14b0
 plotly==6.3.0
+ta==0.11.0
