@@ -7,7 +7,7 @@ import plotly.graph_objs as go
 from datetime import date, timedelta
 
 st.set_page_config(layout="wide")
-st.title("📊 Simple Technical Analysis App (robust, improved)")
+st.title("📊 Simple Technical Analysis App (robust pandas-based)")
 
 # Sidebar controls
 st.sidebar.header("Indicator & Range Options")
@@ -40,21 +40,14 @@ if start_date >= end_date:
 # Ticker input
 ticker = st.text_input("Enter Stock Ticker (e.g. AAPL, TSLA, RELIANCE.BO):", "AAPL").strip().upper()
 
-# Helpers
 def safe_series(df, col):
-    """Return a 1-D Series with NaNs dropped for plotting, or None if not available."""
+    """Return a 1-D Series with no NaNs for plotting, or None if not available."""
     if col in df.columns:
         s = df[col].dropna()
         if not s.empty:
             return s
     return None
 
-def add_line_trace(fig, series, name, line_kwargs=None):
-    if series is None:
-        return
-    fig.add_trace(go.Scatter(x=series.index, y=series.values, name=name, **(line_kwargs or {})))
-
-# Main
 if ticker and start_date < end_date:
     with st.spinner(f"Downloading {ticker} data..."):
         try:
@@ -69,138 +62,151 @@ if ticker and start_date < end_date:
         st.error("No data found for that ticker / date range.")
         st.stop()
 
-    # show raw tail for quick verification
     data.index = pd.to_datetime(data.index)
     st.write(f"### Latest rows for {ticker}")
     st.dataframe(data.tail())
 
-    # Working copy
+    # Make working copy
     df = data.copy()
 
-    # Ensure Close exists (yfinance sometimes gives 'Adj Close' instead)
-    if "Close" not in df.columns:
-        if "Adj Close" in df.columns:
-            df["Close"] = df["Adj Close"]
-        elif "Adj_Close" in df.columns:
-            df["Close"] = df["Adj_Close"]
-        else:
-            # try to infer a price column
-            numeric_cols = df.select_dtypes("number").columns.tolist()
-            if numeric_cols:
-                # pick last numeric column as fallback
-                df["Close"] = df[numeric_cols[-1]]
-                st.warning(f"'Close' not found. Using fallback column '{numeric_cols[-1]}' as Close.")
-            else:
-                st.error("No numeric price column found to compute indicators.")
-                st.stop()
+    # Ensure we have a usable 'Close'
+    if "Close" not in df.columns and "Adj Close" in df.columns:
+        df["Close"] = df["Adj Close"]
 
-    # --- Indicators (use min_periods=1 to show partial values early) ---
+    # --- Indicators computed with pandas/numpy (robust, 1-D) ---
+    # SMA
     if show_sma:
-        df[f"SMA_{sma_window}"] = df["Close"].rolling(window=sma_window, min_periods=1).mean()
+        if len(df) >= 1:
+            df[f"SMA_{sma_window}"] = df["Close"].rolling(window=sma_window, min_periods=1).mean()
+        else:
+            st.warning("Not enough rows to compute SMA.")
 
+    # EMA
     if show_ema:
-        df[f"EMA_{ema_span}"] = df["Close"].ewm(span=ema_span, adjust=False).mean()
+        if len(df) >= 1:
+            df[f"EMA_{ema_span}"] = df["Close"].ewm(span=ema_span, adjust=False).mean()
+        else:
+            st.warning("Not enough rows to compute EMA.")
 
+    # Bollinger Bands
     if show_boll:
-        middle = df["Close"].rolling(window=bb_window, min_periods=1).mean()
-        std = df["Close"].rolling(window=bb_window, min_periods=1).std(ddof=0)
-        df[f"BB_upper_{bb_window}"] = middle + bb_stddev * std
-        df[f"BB_lower_{bb_window}"] = middle - bb_stddev * std
+        if len(df) >= 1:
+            middle = df["Close"].rolling(window=bb_window, min_periods=1).mean()
+            std = df["Close"].rolling(window=bb_window, min_periods=1).std(ddof=0)
+            df[f"BB_upper_{bb_window}"] = middle + bb_stddev * std
+            df[f"BB_lower_{bb_window}"] = middle - bb_stddev * std
+        else:
+            st.warning("Not enough rows to compute Bollinger Bands.")
 
+    # RSI using Wilder smoothing (ewm)
     if show_rsi:
-        # Wilder-style smoothing via ewm; use min_periods=1 so user sees progressive values,
-        # but warn if dataset shorter than requested length.
-        delta = df["Close"].diff()
-        gain = delta.clip(lower=0.0)
-        loss = -delta.clip(upper=0.0)
-        avg_gain = gain.ewm(alpha=1.0 / rsi_length, adjust=False, min_periods=1).mean()
-        avg_loss = loss.ewm(alpha=1.0 / rsi_length, adjust=False, min_periods=1).mean()
-        rs = avg_gain / avg_loss
-        df[f"RSI_{rsi_length}"] = 100 - (100 / (1 + rs))
-        if len(df) < rsi_length:
-            st.info(f"RSI computed with {len(df)} rows; full stabilization needs ≈{rsi_length} rows.")
+        if len(df) >= 2:
+            delta = df["Close"].diff()
+            gain = delta.clip(lower=0.0)
+            loss = -delta.clip(upper=0.0)
+            avg_gain = gain.ewm(alpha=1.0 / rsi_length, adjust=False, min_periods=rsi_length).mean()
+            avg_loss = loss.ewm(alpha=1.0 / rsi_length, adjust=False, min_periods=rsi_length).mean()
+            rs = avg_gain / avg_loss
+            df[f"RSI_{rsi_length}"] = 100 - (100 / (1 + rs))
+        else:
+            st.warning("Not enough rows to compute RSI.")
 
+    # MACD (EMA differences)
     if show_macd:
-        ema_fast = df["Close"].ewm(span=macd_fast, adjust=False).mean()
-        ema_slow = df["Close"].ewm(span=macd_slow, adjust=False).mean()
-        macd_line = ema_fast - ema_slow
-        signal_line = macd_line.ewm(span=macd_signal, adjust=False).mean()
-        hist = macd_line - signal_line
-        df[f"MACD_{macd_fast}_{macd_slow}"] = macd_line
-        df[f"Signal_{macd_fast}_{macd_slow}_{macd_signal}"] = signal_line
-        df[f"Hist_{macd_fast}_{macd_slow}_{macd_signal}"] = hist
-        if len(df) < macd_slow:
-            st.info(f"MACD slow period is {macd_slow}; you have only {len(df)} rows — results may be partial.")
-
-    # --- Plotting (safe) ---
-    # Determine available OHLC columns
-    ohlc_required = ["Open", "High", "Low", "Close"]
-    present_ohlc = [c for c in ohlc_required if c in df.columns]
-    has_full_ohlc = len(present_ohlc) == 4
-
-    # Candlestick if full OHLC present (and at least one non-NaN row)
-    if has_full_ohlc:
-        subset = ["Open", "High", "Low", "Close"]
-        # dropna on subset is safe now because we ensured columns exist
-        candlestick_df = df.dropna(subset=subset)
-        if not candlestick_df.empty:
-            fig = go.Figure(data=[go.Candlestick(
-                x=candlestick_df.index,
-                open=candlestick_df["Open"],
-                high=candlestick_df["High"],
-                low=candlestick_df["Low"],
-                close=candlestick_df["Close"],
-                name="Price"
-            )])
-            # overlay indicators if they have values (show partial lines)
-            if show_sma:
-                add_line_trace(fig, safe_series(df, f"SMA_{sma_window}"), f"SMA_{sma_window}",
-                               {"line": {"color": "blue", "width": 1.5}})
-            if show_ema:
-                add_line_trace(fig, safe_series(df, f"EMA_{ema_span}"), f"EMA_{ema_span}",
-                               {"line": {"color": "orange", "width": 1.5}})
-            if show_boll:
-                add_line_trace(fig, safe_series(df, f"BB_upper_{bb_window}"), f"BB_upper_{bb_window}",
-                               {"line": {"color": "green", "dash": "dot"}})
-                add_line_trace(fig, safe_series(df, f"BB_lower_{bb_window}"), f"BB_lower_{bb_window}",
-                               {"line": {"color": "red", "dash": "dot"}})
-            fig.update_layout(title=f"{ticker} Price Chart (Candlestick)", xaxis_rangeslider_visible=False, height=600)
-            st.plotly_chart(fig, use_container_width=True)
+        if len(df) >= 2:
+            ema_fast = df["Close"].ewm(span=macd_fast, adjust=False).mean()
+            ema_slow = df["Close"].ewm(span=macd_slow, adjust=False).mean()
+            macd_line = ema_fast - ema_slow
+            signal_line = macd_line.ewm(span=macd_signal, adjust=False).mean()
+            hist = macd_line - signal_line
+            df[f"MACD_{macd_fast}_{macd_slow}"] = macd_line
+            df[f"Signal_{macd_fast}_{macd_slow}_{macd_signal}"] = signal_line
+            df[f"Hist_{macd_fast}_{macd_slow}_{macd_signal}"] = hist
         else:
-            st.info("Full OHLC exists but rows were NaN — falling back to Close-line chart.")
-            has_full_ohlc = False
+            st.warning("Not enough rows to compute MACD.")
 
-    # Fallback to Close-line chart if candlestick not possible
-    if not has_full_ohlc:
-        close_s = safe_series(df, "Close")
-        if close_s is not None:
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=close_s.index, y=close_s.values, name="Close", line=dict(width=1.5)))
-            if show_sma:
-                add_line_trace(fig, safe_series(df, f"SMA_{sma_window}"), f"SMA_{sma_window}",
-                               {"line": {"color": "blue", "width": 1.5}})
-            if show_ema:
-                add_line_trace(fig, safe_series(df, f"EMA_{ema_span}"), f"EMA_{ema_span}",
-                               {"line": {"color": "orange", "width": 1.5}})
-            if show_boll:
-                add_line_trace(fig, safe_series(df, f"BB_upper_{bb_window}"), f"BB_upper_{bb_window}",
-                               {"line": {"color": "green", "dash": "dot"}})
-                add_line_trace(fig, safe_series(df, f"BB_lower_{bb_window}"), f"BB_lower_{bb_window}",
-                               {"line": {"color": "red", "dash": "dot"}})
-            fig.update_layout(title=f"{ticker} Price Chart (Close-line fallback)", height=600)
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.error("No Close prices available to plot.")
+    # --- Plotting: prefer Candlestick if OHLC present; else fallback to Close-line + indicators ---
+    ohlc_cols = [c for c in ["Open", "High", "Low", "Close"] if c in df.columns]
+    has_full_ohlc = all(c in df.columns for c in ["Open", "High", "Low", "Close"])
+
+    # Safe helper to add traces
+    def add_line_trace(fig, series, name, line_kwargs=None):
+        if series is None:
+            return
+        line_kwargs = line_kwargs or {}
+        fig.add_trace(go.Scatter(x=series.index, y=series.values, name=name, **line_kwargs))
+
+    try:
+        if has_full_ohlc:
+            candlestick_df = df.dropna(subset=["Open", "High", "Low", "Close"])
+            if candlestick_df.empty:
+                st.info("OHLC rows are all NaN — falling back to Close-line chart.")
+                has_full_ohlc = False
+            else:
+                fig = go.Figure(data=[go.Candlestick(
+                    x=candlestick_df.index,
+                    open=candlestick_df["Open"],
+                    high=candlestick_df["High"],
+                    low=candlestick_df["Low"],
+                    close=candlestick_df["Close"],
+                    name="Price"
+                )])
+
+                # Add indicators (only if they have non-NaN points)
+                if show_sma:
+                    s = safe_series(df, f"SMA_{sma_window}")
+                    add_line_trace(fig, s, f"SMA_{sma_window}", {"line": {"color": "blue", "width": 1.5}})
+                if show_ema:
+                    s = safe_series(df, f"EMA_{ema_span}")
+                    add_line_trace(fig, s, f"EMA_{ema_span}", {"line": {"color": "orange", "width": 1.5}})
+                if show_boll:
+                    up = safe_series(df, f"BB_upper_{bb_window}")
+                    lo = safe_series(df, f"BB_lower_{bb_window}")
+                    add_line_trace(fig, up, f"BB_upper_{bb_window}", {"line": {"color": "green", "dash": "dot"}})
+                    add_line_trace(fig, lo, f"BB_lower_{bb_window}", {"line": {"color": "red", "dash": "dot"}})
+
+                fig.update_layout(title=f"{ticker} Price Chart (Candlestick)", xaxis_rangeslider_visible=False, height=600)
+                st.plotly_chart(fig, use_container_width=True)
+
+        if not has_full_ohlc:
+            # Fallback: simple Close-line chart + indicators
+            close_series = safe_series(df, "Close")
+            if close_series is None:
+                st.error("No Close price available to plot.")
+            else:
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(x=close_series.index, y=close_series.values, name="Close", line=dict(width=1.5)))
+                if show_sma:
+                    s = safe_series(df, f"SMA_{sma_window}")
+                    add_line_trace(fig, s, f"SMA_{sma_window}", {"line": {"color": "blue", "width": 1.5}})
+                if show_ema:
+                    s = safe_series(df, f"EMA_{ema_span}")
+                    add_line_trace(fig, s, f"EMA_{ema_span}", {"line": {"color": "orange", "width": 1.5}})
+                if show_boll:
+                    up = safe_series(df, f"BB_upper_{bb_window}")
+                    lo = safe_series(df, f"BB_lower_{bb_window}")
+                    add_line_trace(fig, up, f"BB_upper_{bb_window}", {"line": {"color": "green", "dash": "dot"}})
+                    add_line_trace(fig, lo, f"BB_lower_{bb_window}", {"line": {"color": "red", "dash": "dot"}})
+
+                fig.update_layout(title=f"{ticker} Price Chart (Close-line fallback)", height=600)
+                st.plotly_chart(fig, use_container_width=True)
+
+    except Exception as e:
+        st.error("An error occurred while preparing the chart.")
+        st.info("Check the server logs for details.")
+        # Don't show full stack to users, but show brief cause
+        st.write(f"Error: {e}")
 
     # RSI panel
     if show_rsi:
-        s = safe_series(df, f"RSI_{rsi_length}")
+        col = f"RSI_{rsi_length}"
+        s = safe_series(df, col)
         if s is not None:
             st.subheader(f"RSI ({rsi_length})")
             st.line_chart(s)
-            st.caption("RSI: >70 often considered overbought, <30 oversold (convention).")
+            st.caption("RSI: >70 often overbought, <30 often oversold (convention).")
         else:
-            st.warning("RSI has no valid values for the chosen date range / parameters.")
+            st.info("RSI not available for the chosen range / parameters.")
 
     # MACD panel
     if show_macd:
@@ -210,37 +216,24 @@ if ticker and start_date < end_date:
         s_macd = safe_series(df, macd_col)
         s_sig = safe_series(df, sig_col)
         s_hist = safe_series(df, hist_col)
-        if s_macd is not None or s_sig is not None or s_hist is not None:
+        if s_macd is not None and s_sig is not None and s_hist is not None:
             st.subheader("MACD")
             fig_m = go.Figure()
-            if s_macd is not None:
-                fig_m.add_trace(go.Scatter(x=s_macd.index, y=s_macd.values, name="MACD", line=dict(width=1.5)))
-            if s_sig is not None:
-                fig_m.add_trace(go.Scatter(x=s_sig.index, y=s_sig.values, name="Signal", line=dict(width=1.0)))
-            if s_hist is not None:
-                fig_m.add_trace(go.Bar(x=s_hist.index, y=s_hist.values, name="Histogram"))
+            fig_m.add_trace(go.Scatter(x=s_macd.index, y=s_macd.values, name="MACD", line=dict(width=1.5)))
+            fig_m.add_trace(go.Scatter(x=s_sig.index, y=s_sig.values, name="Signal", line=dict(width=1.0)))
+            fig_m.add_trace(go.Bar(x=s_hist.index, y=s_hist.values, name="Histogram"))
             fig_m.update_layout(height=300, showlegend=True)
             st.plotly_chart(fig_m, use_container_width=True)
         else:
-            st.warning("MACD has no valid values for the chosen date range / parameters.")
+            st.info("MACD not available for the chosen range / parameters.")
 
-    # --- Indicator snapshot (always visible) ---
+    # Show tail of computed indicator columns
+    st.subheader("Computed indicator snapshot")
     indicator_cols = [c for c in df.columns if any(prefix in c for prefix in ("SMA_", "EMA_", "BB_", "RSI_", "MACD_", "Signal_", "Hist_"))]
-    st.subheader("Computed indicator snapshot (last 10 rows)")
     if indicator_cols:
         st.dataframe(df[indicator_cols].tail(10))
-        # Warn about fully-empty indicator columns
-        for col in indicator_cols:
-            if df[col].dropna().empty:
-                st.warning(f"{col} has no valid values (likely not enough data for that window).")
     else:
-        st.info("No indicators calculated (enable toggles in the sidebar).")
+        st.info("No indicators computed (toggle options on the left).")
 
-    # --- Download CSV of computed indicators + core price columns ---
-    download_cols = ["Open", "High", "Low", "Close", "Volume"] + indicator_cols
-    download_cols = [c for c in download_cols if c in df.columns]
-    if download_cols:
-        csv = df[download_cols].to_csv(index=True)
-        st.download_button(label="Download CSV (price + indicators)", data=csv, file_name=f"{ticker}_indicators.csv", mime="text/csv")
 else:
     st.info("Enter a ticker and a valid date range to begin.")
