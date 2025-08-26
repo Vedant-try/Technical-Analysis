@@ -3,7 +3,6 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import pandas_ta as ta
 import plotly.graph_objs as go
 import pandas_ta as ta
 
@@ -55,4 +54,5 @@ if ticker:
 
     else:
         st.error("Ticker not found. Try again.")
+
 
